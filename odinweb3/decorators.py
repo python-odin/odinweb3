@@ -16,7 +16,6 @@ def operation(path: PathTypes, method: Method=Method.Get, operation_id: str=None
     return inner
 
 
-
 class Operation:
     """
     Decorator for defining an API operation. Usually one of the helpers (listing, detail, update, delete) would be
