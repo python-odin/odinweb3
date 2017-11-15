@@ -1,5 +1,9 @@
 import enum
 
+from http import HTTPStatus
+
+__all__ = ('Method', 'Param', 'Type', 'Status', 'HTTPStatus')
+
 
 class Method(enum.Enum):
     """
@@ -22,6 +26,20 @@ class Method(enum.Enum):
     HEAD = 'head'
     PATCH = 'patch'
     TRACE = 'trace'
+
+
+# Keep HTTPStatus available for backwards compatibility, but favour Status
+Status = HTTPStatus
+
+
+class Param(enum.Enum):
+    """
+    Location where a parameter is defined for.
+    """
+    Path = 'path'
+    Query = 'query'
+    Header = 'header'
+    Cookie = 'cookie'
 
 
 class Type(enum.Enum):
