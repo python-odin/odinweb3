@@ -57,4 +57,6 @@ class SigningError(Exception):
 
 
 class MultiValueDictKeyError(KeyError):
-    pass
+    """
+    Multiple value dictionary KeyError
+    """

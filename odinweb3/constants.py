@@ -32,7 +32,7 @@ class Method(enum.Enum):
 Status = HTTPStatus
 
 
-class Param(enum.Enum):
+class In(enum.Enum):
     """
     Location where a parameter is defined for.
     """

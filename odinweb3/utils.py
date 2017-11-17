@@ -9,7 +9,7 @@ import os
 import base64
 import itertools
 
-from typing import Any, Iterable
+from typing import Iterable
 
 
 def token(bit_depth: int=64, encoder=base64.b32encode) -> str:
@@ -21,15 +21,6 @@ def token(bit_depth: int=64, encoder=base64.b32encode) -> str:
         data = os.urandom(chars)
         return encoder(data).decode().rstrip('=')
     raise ValueError("Bit depth must be a multiple of 8")
-
-
-def to_bool(value: Any) -> bool:
-    """
-    Convert a value into a bool but handle "truthy" strings eg, yes, true, ok, y
-    """
-    if isinstance(value, str):
-        return value.upper() in ('Y', 'YES', 'T', 'TRUE', '1', 'OK')
-    return bool(value)
 
 
 def dict_filter_update(base: dict, updates: dict):
