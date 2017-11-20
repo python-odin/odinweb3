@@ -1,4 +1,4 @@
-from odinweb import testing
+from odinweb3 import testing
 
 
 def test_mock_request():

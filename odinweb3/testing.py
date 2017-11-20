@@ -6,7 +6,7 @@ Collection of Mocks and Tools for testing APIs.
 
 """
 from collections import MutableMapping
-from typing import AnyStr
+from typing import AnyStr, Union
 
 from odin.codecs import json_codec
 from urllib.parse import urlparse, parse_qs
@@ -31,9 +31,12 @@ class MockRequest(HttpRequestBase):
         scheme, netloc, path, _, query, _ = urlparse(uri)
         return cls(scheme, netloc, path, parse_qs(query), headers, method, post, body, request_codec, response_codec)
 
-    def __init__(self, scheme: str='http', host: str='127.0.0.1', path: str=None,
-                 query: MultiValueDict=None, headers: MultiValueDict=None, method: Method=Method.GET,
-                 post: MultiValueDict=None, body: AnyStr='', request_codec=None, response_codec=None):
+    def __init__(self, scheme: str='http', host: str='127.0.0.1',
+                 method: Method = Method.GET, path: str=None,
+                 query: Union[MultiValueDict, dict]=None,
+                 headers: Union[MultiValueDict, dict]=None,
+                 post: MultiValueDict=None,
+                 body: AnyStr='', request_codec=None, response_codec=None):
         self._scheme = scheme
         self._host = host
         self._path = path
@@ -59,11 +62,11 @@ class MockRequest(HttpRequestBase):
 
     @lazy_property
     def query(self):
-        return self._query
+        return MultiValueDict(self._query or {})
 
     @lazy_property
     def headers(self):
-        return self._headers
+        return MultiValueDict(self._headers or {})
 
     @lazy_property
     def method(self):
@@ -71,7 +74,7 @@ class MockRequest(HttpRequestBase):
 
     @lazy_property
     def post(self):
-        return self._post
+        return MultiValueDict(self._post or {})
 
     @lazy_property
     def body(self):

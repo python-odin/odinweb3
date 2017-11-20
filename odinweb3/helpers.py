@@ -1,13 +1,11 @@
-# Type imports
-from typing import Iterable, Optional, Any
-
+from typing import Any, Iterable, Optional
 from odin.exceptions import CodecDecodeError, ResourceException
 
 from .bases import HttpRequestBase
 from .constants import Status
 from .data_structures import HttpResponse
 from .exceptions import HttpError
-from .typing import StringResolver
+from .typing import StringResolver, StringMap
 
 __all__ = ('get_resource', 'create_response')
 
@@ -76,7 +74,7 @@ def get_resource(request: HttpRequestBase, resource, allow_multiple: bool=False,
     return instance
 
 
-def create_response(request: HttpRequestBase, body: Any=None, status: Status=None, headers=None):
+def create_response(request: HttpRequestBase, body: Any=None, status: Status=None, headers: StringMap=None):
     """
     Generate a HttpResponse.
 
@@ -91,5 +89,5 @@ def create_response(request: HttpRequestBase, body: Any=None, status: Status=Non
     else:
         body = request.response_codec.dumps(body)
         response = HttpResponse(body, status or Status.OK, headers)
-        response.set_content_type(request.response_codec.CONTENT_TYPE)
+        response.content_type = request.response_codec.CONTENT_TYPE
         return response
