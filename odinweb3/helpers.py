@@ -7,8 +7,6 @@ from .data_structures import HttpResponse
 from .exceptions import HttpError
 from .typing import StringResolver, StringMap
 
-__all__ = ('get_resource', 'create_response')
-
 
 def parse_content_type(value: str) -> str:
     """
