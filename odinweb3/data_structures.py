@@ -1,13 +1,14 @@
 import re
 
-from odin import Resource
-from odin.utils import lazy_property, getmeta, force_tuple
-from typing import NamedTuple, Union, Optional, Dict, Any, Iterable, Tuple, Hashable, List, Callable, Iterator
+from odin import Resource, getmeta
+from odin.utils.collections import force_tuple
+from odin.utils.decorators import lazy_property
+from typing import Type, NamedTuple, Union, Optional, Dict, Any, Iterable, Tuple, Hashable, List, Callable, Iterator
 
-from .bases import HttpRequestBase
-from .constants import Type, Status, In
+from .bases import HttpRequestBase, SpecificationExtendable
+from .constants import Status, Location, DataType
 from .exceptions import MultiValueDictKeyError
-from .typing import StringMap
+from .typing import StringMap, OpenApiObject
 from .utils import sort_by_priority, dict_filter
 
 
@@ -74,7 +75,7 @@ PathParam = NamedTuple('PathParam', [
     ('type', Type),
     ('type_args', Optional[str])
 ])
-PathParam.__new__.__defaults__ = (None, Type.Integer, None)
+PathParam.__new__.__defaults__ = (None, DataType.Integer, None)
 
 
 def _add_nodes(a, b):
@@ -113,6 +114,9 @@ def _to_openapi(base: StringMap=None, description: str=None,
 PATH_NODE_RE = re.compile(r'^{([a-zA-Z]\w*)(?::([a-zA-Z]\w*))?(?::([-^$+*:\w\\\[\]|]+))?}$')
 
 
+PathTypes = Union['UrlPath', str, PathParam]
+
+
 class UrlPath:
     """
     Object that represents a URL path.
@@ -120,7 +124,7 @@ class UrlPath:
     __slots__ = ('_nodes',)
 
     @classmethod
-    def from_object(cls, obj: Union['UrlPath', str, PathParam]) -> 'UrlPath':
+    def from_object(cls, obj: PathTypes) -> 'UrlPath':
         """
         Attempt to convert any object into a UrlPath.
 
@@ -159,7 +163,7 @@ class UrlPath:
                 except KeyError:
                     if param_type is not None:
                         raise ValueError("Unknown param type `{}` in: {}".format(param_type, node))
-                    type_ = Type.Integer
+                    type_ = DataType.Integer
 
                 nodes.append(PathParam(name, type_, param_arg))
             else:
@@ -275,101 +279,117 @@ Path = Union[UrlPath, PathParam, str]
 NoPath = UrlPath()
 
 
-class Param:
+class Parameter(SpecificationExtendable):
     """
-    Represents a generic parameter object.
+    Describes a single operation parameter.
+
+    A unique parameter is defined by a combination of a name and location.
+
+    :param name: Name of the parameter
+    :param location: Location of parameter (query, header, path, cookie)
+    :param description: Description of the parameter
+    :param required: Indicates if this parameter is mandatory. This value will
+        default to the appropriate value based on the location:
+
+        * ``Path``; True
+        * All others; False
+
+        If ``False`` is provided with the location set to ``Path`` a
+        :class:`ValueError` exception will be raised.
+    :param deprecated: This parameter is marked as deprecated in OpenAPI Spec
+    :param allow_empty_value:
+
     """
-    __slots__ = ('name', 'in_', 'type', 'resource', 'description', 'options')
+    @classmethod
+    def path(cls, name: str, description: str=None) -> 'Parameter':
+        """
+        Create a path parameter
+        """
+        return cls(name, Location.Path, description, True)
 
     @classmethod
-    def path(cls, name: str, type_: Type=Type.String, description: str=None, default: Any=None,
-             minimum: Any=None, maximum: Any=None, enum: Iterable[str]=None, **options):
+    def query(cls, name: str, description: str=None, required: bool=None,
+              deprecated: bool=None, allow_empty_value: bool=None) -> 'Parameter':
         """
-        Define a path parameter
+        Create a query parameter
         """
-        if minimum is not None and maximum is not None and minimum > maximum:
-            raise ValueError("Minimum must be less than or equal to the maximum.")
-        return cls(name, In.Path, type_, None, description,
-                   default=default, minimum=minimum, maximum=maximum,
-                   enum=enum, required=True, **options)
+        return cls(name, Location.Query, description, required, deprecated, allow_empty_value)
 
     @classmethod
-    def query(cls, name: str, type_: Type=Type.String, description: str=None, required: bool=None, default: Any=None,
-              minimum: Any=None, maximum: Any=None, enum: Iterable[str]=None, **options):
+    def header(cls, name: str, description: str=None, required: bool=None, deprecated: bool=None) -> 'Parameter':
         """
-        Define a query parameter
+        Create a header parameter
         """
-        if minimum is not None and maximum is not None and minimum > maximum:
-            raise ValueError("Minimum must be less than or equal to the maximum.")
-        return cls(name, In.Query, type_, None, description,
-                   required=required, default=default,
-                   minimum=minimum, maximum=maximum,
-                   enum=enum, **options)
+        return cls(name, Location.Header, description, required, deprecated)
 
     @classmethod
-    def header(cls, name: str, type_: Type=Type.String, description: str=None, default: Any=None, required: bool=None,
-               **options):
+    def cookie(cls, name: str, description: str=None, required: bool=None, deprecated: bool=None) -> 'Parameter':
         """
-        Define a header parameter.
+        Create a cookie parameter
         """
-        return cls(name, In.Header, type_, None, description,
-                   required=required, default=default,
-                   **options)
+        return cls(name, Location.Cookie, description, required, deprecated)
 
-    @classmethod
-    def cookie(cls, name: str, type_: Type=Type.String, description: str=None, default: Any=None, required: bool=None,
-               minimum: Any = None, maximum: Any = None, enum: Iterable[str] = None, **options):
-        """
-        Define form parameter.
-        """
-        if minimum is not None and maximum is not None and minimum > maximum:
-            raise ValueError("Minimum must be less than or equal to the maximum.")
-        return cls(name, In.Form, type_, None, description,
-                   required=required, default=default,
-                   minimum=minimum, maximum=maximum,
-                   enum=enum, **options)
+    __slots__ = ('name', 'location', 'description', 'required', 'deprecated', 'allow_empty_value')
 
-    def __init__(self, name: str, in_: In, type_: Type=None, resource: Resource=None, description: str=None, **options):
+    def __init__(self, name: str, location: Location, description: str=None, required: bool=None,
+                 deprecated: bool=None, allow_empty_value: bool=None) -> None:
+        if location is Location.Path and required is False:
+            raise ValueError("For Path locations, required MUST be True.")
+
+        super().__init__()
+
         self.name = name
-        self.in_ = in_
-        self.type = type_
-        self.resource = resource
+        self.location = location
         self.description = description
-        self.options = dict_filter(**options)
+        # Default to True for Path locations else False
+        self.required = (location is Location.Path) if required is None else bool(required)
+        self.deprecated = deprecated
+        self.allow_empty_value = allow_empty_value
 
-    def __hash__(self):
-        return hash(self.in_.value + ':' + self.name)
-
-    def __str__(self):
-        return "{} param {}".format(self.in_.value.title(), self.name)
-
-    def __repr__(self):
-        return "Param({!r}, {!r}, {!r}, {!r}, {!r})".format(self.name, self.in_, self.type, self.resource, self.options)
-
-    def __eq__(self, other):
-        if isinstance(other, Param):
-            return hash(self) == hash(other)
+    def __eq__(self, other: Any) -> bool:
+        """
+        Determine if another :class:`Parameters` instance is equivalent. The
+        OpenAPI specification defines this as a matching name & location.
+        """
+        if isinstance(other, Parameter):
+            return (self.name, self.location) == (other.name, other.location)
         return NotImplemented
 
-    # def to_spec(self, bound_resource=None):
-    #     """
-    #     Generate a swagger representation.
-    #     """
-    #     return _to_swagger(
-    #         {
-    #             'name': self.name,
-    #             'in': self.in_.value,
-    #             'type': str(self.type) if self.type else None,
-    #         },
-    #         description=self.description,
-    #         resource=bound_resource if self.resource is DefaultResource else self.resource,
-    #         options=self.options
-    #     )
+    def __and__(self, other: Any) -> 'Parameter':
+        """
+        Combine parameters. The primary use-case for this method is to extend
+        details of a generated param (eg a Path parameter) with documentation.
+
+        The *RHS* of the assignment gets priority.
+
+        """
+        if isinstance(other, Parameter):
+            return Parameter(
+                self.name, self.location,
+                other.description or self.description,
+                other.required or self.required,
+                other.deprecated or self.deprecated,
+                other.allow_empty_value or self.allow_empty_value,
+            )
+        return NotImplemented
+
+    def to_openapi(self) -> OpenApiObject:
+        """
+        Output OpenAPI specification values.
+        """
+        return dict_filter({
+            'name': self.name,
+            'in': self.location.value,
+            'description': self.description,
+            'required': self.required,
+            'deprecated': self.deprecated,
+            'allow_empty_value': self.allow_empty_value
+        }, base=super().to_openapi())
 
 
 class Response:
     """
-    Definition of a swagger response.
+    Definition of a OpenApi response.
     """
     __slots__ = ('status', 'description', 'resource')
 
