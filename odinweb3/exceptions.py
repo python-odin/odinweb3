@@ -9,10 +9,14 @@ from .constants import Status
 from .resources import Error
 from .typing import StringMap
 
-__all__ = ('ImmediateHttpResponse', 'HttpError', 'PermissionDenied', 'AccessDenied')
+
+class OdinWebException(Exception):
+    """
+    Odin web exception.
+    """
 
 
-class ImmediateHttpResponse(Exception):
+class ImmediateHttpResponse(OdinWebException):
     """
     A response that should be returned immediately.
     """
@@ -50,13 +54,7 @@ class AccessDenied(HttpError):
         super().__init__(Status.FORBIDDEN, 0, message, developer_method, None, headers)
 
 
-class SigningError(Exception):
-    """
-    Error raised during a signing operation
-    """
-
-
-class MultiValueDictKeyError(KeyError):
+class MultiValueDictKeyError(KeyError, OdinWebException):
     """
     Multiple value dictionary KeyError
     """
