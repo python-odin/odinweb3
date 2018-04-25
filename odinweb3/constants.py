@@ -1,8 +1,7 @@
 import enum
 
 from http import HTTPStatus
-
-__all__ = ('Method', 'Param', 'Type', 'Status', 'HTTPStatus')
+from typing import Tuple
 
 
 class Method(enum.Enum):
@@ -32,7 +31,7 @@ class Method(enum.Enum):
 Status = HTTPStatus
 
 
-class In(enum.Enum):
+class Location(enum.Enum):
     """
     Location where a parameter is defined for.
     """
@@ -42,7 +41,26 @@ class In(enum.Enum):
     Cookie = 'cookie'
 
 
-class Type(enum.Enum):
+class Style(enum.Enum):
+    """
+    Parameter specification style
+    """
+    def __new__(cls, value: str, locations: Tuple[Location, ...]) -> 'Style':
+        obj = int.__new__(cls, value)
+        obj._value_ = value
+        obj.locations = locations
+        return obj
+
+    Matrix = 'matrix', (Location.Path,)
+    Label = 'label', (Location.Path,)
+    Form = 'form', (Location.Query, Location.Cookie)
+    Simple = 'simple', (Location.Path, Location.Header)
+    SpaceDelimited = 'spaceDelimited', (Location.Query,)
+    PipeDelimited = 'pipeDelimited', (Location.Query,)
+    DeepObject = 'deepObject', (Location.Query,)
+
+
+class DataType(enum.Enum):
     """
     Types defined by OpenAPI Spec
     """
@@ -52,15 +70,3 @@ class Type(enum.Enum):
     Boolean = 'boolean', bool
     Array = 'array', list
     Object = 'object', dict
-
-
-# class Format:
-#     Integer = 'int32', Type.Integer
-#     Long = 'int64', Type.Integer
-#     Float = 'float', Type.Number
-#     Double = 'double', Type.Number
-#     Byte = 'byte', Type.String
-#     Binary = 'binary', Type.String
-#     Date = 'date', Type.String
-#     DateTime = 'date-time', Type.String
-#     Password = 'password', Type.String
