@@ -6,40 +6,37 @@ Containers that provide structure to an API.
 
 """
 import logging
-import collections
 
-from typing import Union, Tuple, Any, Generator, Dict, Type
+from collections import OrderedDict
+from typing import Union, Tuple, Any, Generator, Dict, Optional, Sequence
 
-from odin import Resource
-from odin.codecs import json_codec
+from odin import Resource, getmeta
+from odin.codecs.json import codec as json_codec
 from odin.exceptions import ValidationError
-from odin.utils import getmeta
 
 from . import content_type_resolvers
+from .bases import HttpRequestBase
 from .constants import Method, HTTPStatus
 from .data_structures import UrlPath, NoPath, HttpResponse, MiddlewareList
+from .decorators import Operation
 from .exceptions import ImmediateHttpResponse
 from .helpers import resolve_content_type, create_response
 from .resources import Error
 
-__all__ = ('ResourceApi', 'ApiCollection', 'ApiVersion')
-
 logger = logging.getLogger(__name__)
 
-CODECS = {json_codec.CONTENT_TYPE: json_codec}
+DEFAULT_CODECS = {json_codec.content_type: json_codec}
 
 # Attempt to load other codecs that have dependencies
 try:
-    from odin.codecs import msgpack_codec
-
-    CODECS[msgpack_codec.CONTENT_TYPE] = msgpack_codec
+    from odin.codecs.msgpack import codec as msgpack_codec
+    DEFAULT_CODECS[msgpack_codec.content_type] = msgpack_codec
 except ImportError:
     pass
 
 try:
-    from odin.codecs import yaml_codec
-
-    CODECS[yaml_codec.CONTENT_TYPE] = yaml_codec
+    from odin.codecs.yaml import codec as yaml_codec
+    DEFAULT_CODECS[yaml_codec.content_type] = yaml_codec
 except ImportError:
     pass
 
@@ -84,8 +81,9 @@ class ResourceApiMeta(type):
             if parent_ops:
                 operations.extend(parent_ops)
 
+        attrs['_operations'] = sorted(operations, key=lambda o: o.sort_key)
+
         new_class = super_new(mcs, name, bases, attrs)
-        setattr(new_class, '_operations', sorted(operations, key=lambda o: o.sort_key))
 
         return new_class
 
@@ -115,6 +113,9 @@ class ResourceApi(metaclass=ResourceApiMeta):
     """
 
     parent = None
+    """
+    Parent container this object is bound to.
+    """
 
     def __init__(self):
         if not self.api_name:
@@ -126,7 +127,13 @@ class ResourceApi(metaclass=ResourceApiMeta):
         for operation in self._operations:
             operation.bind_to_instance(self)
 
-    def op_paths(self, path_base):
+    def bind_to_container(self, parent):
+        """
+        Bind to a parent container.
+        """
+        self.parent = parent
+
+    def operation_items(self, path_base):
         # type: (Union[str, UrlPath]) -> Generator[Tuple[UrlPath, Operation]]
         """
         Return all operations stored in containers.
@@ -138,7 +145,10 @@ class ResourceApi(metaclass=ResourceApiMeta):
                 yield op_path
 
 
-class ApiContainer(object):
+ApiChild = Union[Operation, 'ApiContainer', ResourceApi]
+
+
+class ApiContainer:
     """
     Container or API endpoints.
 
@@ -146,21 +156,15 @@ class ApiContainer(object):
     can also be nested. This is used to support versions etc.
 
     """
+    __slots__ = ('children', 'name', 'path_prefix', 'parent')
 
-    def __init__(self, *containers, **options):
-        # type: (*Union[Operation, ApiContainer, ResourceApi], **Any) -> None
-        self.containers = list(containers)
-
+    def __init__(self, *children: ApiChild, name: str=None, path_prefix: Union[str, UrlPath]=None) -> None:
         # Set self as the parent
-        for container in self.containers:
-            container.parent = self
+        for child in children:
+            child.bind_to_container(self)
+        self.children = list(children)
 
-        # Having options at the end is  work around until support for
-        # Python < 3.5 is dropped, at that point keyword only args will
-        # be used in place of the options kwargs. eg:
-        #   (*containers:Union[Operation, ApiContainer], name:str=None, path_prefix:Union[str, UrlPath]=None) -> None
-        self.name = name = options.pop('name', None)
-        path_prefix = options.pop('path_prefix', None)
+        self.name = name
         if path_prefix:
             self.path_prefix = UrlPath.from_object(path_prefix)
         elif name:
@@ -168,57 +172,57 @@ class ApiContainer(object):
         else:
             self.path_prefix = NoPath
 
-        if options:
-            raise TypeError("Got an unexpected keyword argument(s) {}", options.keys())
+        self.parent = None
 
-    def operation(self, path, methods=Method.GET, resource=None, tags=None):
-        # type: (UrlPath, Union(Method, Tuple[Method]), Type[Resource], Tags) -> Operation
+    def bind_to_container(self, parent):
         """
-        :param path: A sub path that can be used as a action.
-        :param methods: HTTP method(s) this function responses to.
-        :param resource: Specify the resource that this function encodes/decodes,
-            default is the one specified on the ResourceAPI instance.
-        :param tags: Tags to be applied to operation
+        Bind to a parent container.
+        """
+        self.parent = parent
+
+    def operation(self, path: UrlPath=NoPath, methods: Union[Method, Sequence[Method]]=Method.Get,
+                  resource: Resource=None, tags: Sequence[str]=None, summary: str=None,
+                  middleware: Sequence[Any]=None) -> Operation:
+        """
+        Decorator for creating an operation from a simple method. eg::
+
+            >>> api = ApiContainer()
+            >>> @api.operation('/my-operation', methods=Method.Post)
+            ... def my_operation(request):
+            ...     pass
+
+        The `doc` decorators can be used in conjunction with this decorator.
 
         """
-
         def inner(callback):
-            operation = Operation(callback, path, methods, resource, tags)
-            self.containers.append(operation)
+            operation = Operation(callback, path, methods, resource, tags, summary, middleware)
+            self.children.append(operation)
             return operation
-
         return inner
 
-    def op_paths(self, path_base=None):
-        # type: (Union[str, UrlPath]) -> Generator[Tuple[UrlPath, Operation]]
+    def operation_items(self, path_base: Union[str, UrlPath]=None) -> Generator[Tuple[UrlPath, Operation]]:
         """
-        Return all operations stored in containers.
+        Yields operation item tuples made up of the path and Operation entries.
         """
         if path_base:
             path_base += self.path_prefix
         else:
             path_base = self.path_prefix or UrlPath()
 
-        for container in self.containers:
-            for op_path in container.op_paths(path_base):
-                yield op_path
+        for child in self.children:
+            yield from child.operation_items(path_base)
 
 
-class ApiCollection(ApiContainer):
+ApiCollection = ApiContainer
+
+
+class ApiVersion(ApiContainer):
     """
-    A collection of API endpoints
+    Versioned collection of API children, usually used as the first container
+    to hold a specific version of an API.
     """
-    parent = None
-
-
-class ApiVersion(ApiCollection):
-    """
-    Collection that defines a version of an API.
-    """
-
-    def __init__(self, *containers, **options):
-        # type: (*Union[Operation, ApiContainer, ResourceApi], **Any) -> None
-        self.version = options.pop('version', 1)
+    def __init__(self, *containers: ApiChild, version: int=1, **options) -> None:
+        self.version = version
         options.setdefault('name', 'v{}'.format(self.version))
         super(ApiVersion, self).__init__(*containers, **options)
 
@@ -227,11 +231,11 @@ class ApiInterfaceBase(ApiContainer):
     """
     Base class for API interfaces.
 
-    API interfaces are the interfaces between OdinWeb and the web framework
-    being used.
+    API interfaces are the interfaces between OdinWeb and the HTTP/WSGI
+    framework being utilised.
 
     """
-    registered_codecs = CODECS
+    registered_codecs = DEFAULT_CODECS
     """
     Codecs that are supported by this API.
     """
@@ -261,18 +265,17 @@ class ApiInterfaceBase(ApiContainer):
     Remap certain codecs commonly mistakenly used.
     """
 
-    def __init__(self, *containers, **options):
-        options.setdefault('name', 'api')
-        options.setdefault('path_prefix', UrlPath('', options['name']))
-        self.debug_enabled = options.pop('debug_enabled', False)
-        self.middleware = MiddlewareList(options.pop('middleware', []))
-        self.options = options.pop('options', True)
-        super(ApiInterfaceBase, self).__init__(*containers, **options)
+    def __init__(self, *containers, name: str='api', path_prefix: Union[str, UrlPath]=None,
+                 debug_enabled: bool=False, middleware: list=None, options: bool=True):
+        self.debug_enabled = debug_enabled
+        self.middleware = MiddlewareList(middleware or [])
+        self.options = options
+        super().__init__(*containers, name=name, path_prefix=path_prefix or name)
 
         if not self.path_prefix.is_absolute:
             raise ValueError("Path prefix must be an absolute path (eg start with a '/')")
 
-    def handle_500(self, request, exception):
+    def handle_500(self, request: HttpRequestBase, exception: Exception) -> Any:
         """
         Handle an *un-handled* exception.
         """
@@ -280,6 +283,8 @@ class ApiInterfaceBase(ApiContainer):
         try:
             for middleware in self.middleware.handle_500:
                 resource = middleware(request, exception)
+                # Middleware can be inserted to return a resource to represent
+                # an error response.
                 if resource:
                     return resource
 
@@ -294,7 +299,8 @@ class ApiInterfaceBase(ApiContainer):
         return Error.from_status(HTTPStatus.INTERNAL_SERVER_ERROR, 0,
                                  "An unhandled error has been caught.")
 
-    def dispatch_operation(self, operation, request, path_args):
+    def dispatch_operation(self, operation: Operation, request: HttpRequestBase,
+                           path_args: Dict[str, Any]) -> Tuple[Any, Optional[HTTPStatus], Optional[Dict[str, str]]]:
         """
         Dispatch and handle exceptions from operation.
         """
@@ -342,7 +348,7 @@ class ApiInterfaceBase(ApiContainer):
         else:
             return resource, None, None
 
-    def _dispatch(self, operation, request, path_args):
+    def _dispatch(self, operation: Operation, request: HttpRequestBase, path_args: Dict[str, Any]):
         """
         Wrapped dispatch method, prepare request and generate a HTTP Response.
         """
@@ -371,6 +377,7 @@ class ApiInterfaceBase(ApiContainer):
         # Response types
         resource, status, headers = self.dispatch_operation(operation, request, path_args)
 
+        # Convert status into an integer
         if isinstance(status, HTTPStatus):
             status = status.value
 
@@ -381,9 +388,9 @@ class ApiInterfaceBase(ApiContainer):
         # Encode the response
         return create_response(request, resource, status, headers)
 
-    def dispatch(self, operation, request, **path_args):
+    def dispatch(self, operation: Operation, request: HttpRequestBase, **path_args):
         """
-        Dispatch incoming request and capture top level exeptions.
+        Dispatch incoming request and capture top level exceptions.
         """
         # Add current operation to the request (for convenience in middleware methods)
         request.current_operation = operation
@@ -403,32 +410,23 @@ class ApiInterfaceBase(ApiContainer):
                 # error processing, this often provides convenience features
                 # to aid in the debugging process.
                 raise
-            self.handle_500(request, ex)
-            return HttpResponse("Error processing response.", HTTPStatus.INTERNAL_SERVER_ERROR)
+            return self.handle_500(request, ex)
 
         else:
             return response
 
-    def op_paths(self, path_base=None, collate_methods=False):
-        # type: (Union[str, UrlPath], bool) -> Union[Generator[Tuple[UrlPath, Operation]], Dict[UrlPath, Operation]]
+    def method_collated_operations(self, path_base: Union[str, UrlPath]=None
+                                   ) -> OrderedDict[UrlPath, Dict[str, Operation]]:
         """
-        Return all operations stored in containers.
+        Collates path and operations by method. This is required for certain
+        web frameworks (eg Django) where it is up the developer to handle
+        routing of request method.
 
-        Use the `collate_methods` option to collate methods by path. This is required for
-        certain web frameworks (eg Django) where it is up the developer to handle routing
-        of request method.
+        The result is a structure Path -> Method -> Operation.
         """
-        op_paths = super(ApiInterfaceBase, self).op_paths()
-
-        if collate_methods:
-            # Transform into a path -> method -> operation mapping.
-            paths = collections.OrderedDict()
-            for path, operation in op_paths:
-                methods = paths.setdefault(path, {})
-                for method in operation.methods:
-                    methods[method] = operation
-
-            return paths
-
-        else:
-            return op_paths
+        paths = OrderedDict()
+        for path, operation in self.operation_items(path_base):
+            methods = paths.setdefault(path, {})
+            for method in operation.methods:
+                methods[method] = operation
+        return paths
